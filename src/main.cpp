@@ -3,6 +3,7 @@
 #include <tuple>
 #include <array>
 #include <vector>
+#include <iomanip>
 
 
 using uint8 = uint8_t;
@@ -62,7 +63,6 @@ static const std::array<uint8, 48> PC2 =
 };
 static const std::array<uint8, 16> SHIFTS =
 {
-    //  1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16
     1,  1,  2,  2,  2,  2,  2,  2,  1,  2,  2,  2,  2,  2,  2,  1
 };
 
@@ -186,6 +186,18 @@ auto constexpr permute(std::bitset<T> const& orig, std::array<uint8, V> const& t
     }
     return permuted;
 }
+
+template<size_t T, size_t V>
+auto constexpr permute2(std::bitset<T> const& orig, std::array<uint8, V> const& table)
+{
+    std::bitset<V> permuted = 0;
+    for (uint8 i = 0; i < table.size(); i++)
+    {
+        permuted[i] = orig[table[i] - 1];
+    }
+    return permuted;
+}
+
 template<size_t T>
 std::tuple<uint64,uint64> constexpr divide(std::bitset<T> const& orig)
 {
@@ -196,26 +208,37 @@ std::tuple<uint64,uint64> constexpr divide(std::bitset<T> const& orig)
 }
 
 template<size_t T>
-void rotate(std::bitset<T> & set, uint8 positions)
+void constexpr rotate(std::bitset<T> & set, uint8 positions)
 {
     for (uint8 i = 0; i < positions; i++)
     {
-        bool x = set[set.size() - 1];
-        set <<= 1;
-        set.set(0, x);
-
+        bool x = set[0];
+        set >>= 1;
+        set.set(set.size() - 1, x);
     }
 }
 
 template<size_t T>
-auto merge(std::bitset<T> const& left, std::bitset<T> const& right)
+auto constexpr merge(std::bitset<T> const& left, std::bitset<T> const& right)
 {
-    return std::bitset<T * 2>((left.to_ullong() << right.size())|right.to_ullong());
+    return std::bitset<T * 2>((left.to_ullong() << right.size()) | right.to_ullong());
 }
 
-auto keygen(bs64 key)
+template<size_t T>
+auto reverse(std::bitset<T> & bs)
+{
+    for (uint8 i = 0; i < bs.size() / 2; i++)
+    {
+        bool x = bs[i];
+        bs.set(i,bs[T - i - 1]);
+        bs.set(T - i - 1, x);
+    }
+}
+
+auto keygen(bs64 const& key)
 {
     auto permuted = permute(key, PC1);
+    reverse(permuted);
     bs28 C, D;
     std::tie(C, D) = divide(permuted);
 
@@ -226,26 +249,21 @@ auto keygen(bs64 key)
         rotate(D, SHIFTS[i]);
 
         auto CD = merge(C, D);
-        keys[i] = permute(CD, PC2);        
+        reverse(CD);
+        keys[i] = permute(CD, PC2);
+        reverse(keys[i]);
     }
 
     return keys;
 }
 
+
 auto feistel(bs32 const& R, bs48 const& key)
 {
-    uint64 s_input = 0;
-    for (uint8 i = 0; i < 48; i++)
-    {
-        s_input <<= 1;
-        s_input |= (uint64)((R.to_ulong() >> (32 - EXPANSION[i])) & 0x00000001);
-    }
-    s_input = s_input ^ key.to_ullong();
-
     auto permuted = permute(R, EXPANSION);
     // XOR
     permuted = permuted ^ key;
-    
+    reverse(permuted);
     bs32 out(0);
     for (uint8 i = 0; i < 8; i++)
     {
@@ -260,18 +278,24 @@ auto feistel(bs32 const& R, bs48 const& key)
         out <<= 4;
         out |= SBOX[i][16 * row + column];
     }
-    return permute(out, PBOX);
+
+    reverse(out);
+    auto x = permute2(out, PBOX);
+    return x;
 }
 
 auto des(bs64 block, Keys keys, bool encrypt = true)
 {
+    reverse(block);
     auto permuted = permute(block, IP);
     bs32 L, R;
-    std::tie(L, R) = divide(permuted);
+    std::tie(R, L) = divide(permuted);
+
 
 
     for (uint8 i = 0; i < 16; i++)
     {
+
         auto temp = R;
         R = L ^ feistel(R, encrypt ? keys[i] : keys[keys.size() - 1 - i]);
         L = temp;
@@ -279,7 +303,9 @@ auto des(bs64 block, Keys keys, bool encrypt = true)
 
     bs64 RL = merge(L, R);
 
-    return permute(RL, FP).to_ullong();
+    auto x = permute(RL, FP);
+    reverse(x);
+    return x.to_ullong();
 }
 
 void main()
@@ -291,16 +317,28 @@ void main()
     auto textArr = toArray(text);
 
     auto keys = keygen(keyArr[0]);
-    std::vector<uint8> crypted;
+    std::vector<uint64> crypted;
 
     for (auto const& block : textArr)
     {
-        uint64 y = des(block, keys);
-        uint64 x = des(y, keys, true);
-        for (uint8 i = 0; i < 8; i++)
+        uint64 x = des(block, keys);
+        crypted.push_back(x);
+        for (uint8 i = 8; i > 0; i--)
         {
-            //std::cout << std::hex << static_cast<int>(((uint8*)&(x))[i]);
-            std::cout << char(((uint8*)&(x))[i]);
+            int xx = static_cast<int>(((uint8*)&(x))[i - 1]);
+            std::cout << std::setfill('0') << std::setw(2) << std::hex << xx;
+        }
+
+    }
+    std::cout << std::endl;
+
+    for (auto block : crypted)
+    {
+        uint64 x = des(block, keys, false);
+        for (uint8 i = 8; i > 0; i--)
+        {
+            std::cout << ((char*)&(x))[i-1];
+
         }
 
     }
